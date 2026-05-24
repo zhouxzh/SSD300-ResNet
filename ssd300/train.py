@@ -13,9 +13,15 @@ from .model import SSD300, ResNet, Loss
 from .utils import dboxes300_coco, Encoder, visualize_sample
 
 
-WEIGHTS_DIR = "weights"
-BEST_CHECKPOINT = os.path.join(WEIGHTS_DIR, "best.pth")
-LAST_CHECKPOINT = os.path.join(WEIGHTS_DIR, "last.pth")
+WEIGHTS_ROOT = "weights"
+
+
+def get_backbone_weights_dir(backbone):
+    return os.path.join(WEIGHTS_ROOT, backbone)
+
+
+def get_onnx_path(backbone):
+    return os.path.join(get_backbone_weights_dir(backbone), f"ssd300_{backbone}.onnx")
 
 def tencent_trick(model):
     """
@@ -44,20 +50,20 @@ def warmup(optim, warmup_iters, iteration, base_lr):
 def export_onnx_model(model, device, onnx_path):
     print(f"正在导出 ONNX 模型至 {onnx_path}...")
     model.eval()
+    onnx_dir = os.path.dirname(onnx_path)
+    if onnx_dir:
+        os.makedirs(onnx_dir, exist_ok=True)
     dummy_input = torch.randn(1, 3, 300, 300).to(device)
-    try:
-        torch.onnx.export(
-            model,
-            dummy_input,
-            onnx_path,
-            verbose=False,
-            input_names=['input'],
-            output_names=['boxes', 'scores'],
-            opset_version=11
-        )
-        print(f"ONNX 模型已导出至: {onnx_path}")
-    except Exception as e:
-        print(f"导出 ONNX 失败: {e}")
+    torch.onnx.export(
+        model,
+        dummy_input,
+        onnx_path,
+        verbose=False,
+        input_names=['input'],
+        output_names=['boxes', 'scores'],
+        opset_version=11
+    )
+    print(f"ONNX 模型已导出至: {onnx_path}")
 
 def validate_and_visualize(ssd_model, epoch, val_loader, eval_encoder, coco_gt, category_names, device, writer, args):
     # 每个 Epoch 结束进行验证
@@ -65,7 +71,7 @@ def validate_and_visualize(ssd_model, epoch, val_loader, eval_encoder, coco_gt, 
     ssd_model.eval()
     
     # 准备可视化目录
-    viz_dir = f"viz_results/epoch_{epoch+1}"
+    viz_dir = os.path.join("viz_results", args.backbone, f"epoch_{epoch+1}")
     if not os.path.exists(viz_dir):
         os.makedirs(viz_dir)
         
@@ -153,6 +159,9 @@ def save_checkpoint(path, epoch, ssd_model, optimizer, scheduler, best_map):
 
 def train(args, train_loader, val_loader, coco_gt, category_names=None, resume_checkpoint=None, start_epoch=0):
     writer = SummaryWriter(log_dir=f"logs/{args.backbone}")
+    weights_dir = get_backbone_weights_dir(args.backbone)
+    best_checkpoint = os.path.join(weights_dir, "best.pth")
+    last_checkpoint = os.path.join(weights_dir, "last.pth")
     
     # Hyperparameters from args
     batch_size = args.batch_size
@@ -170,6 +179,7 @@ def train(args, train_loader, val_loader, coco_gt, category_names=None, resume_c
     # 3. 初始化模型
     device = torch.device(args.device)
     print(f"使用设备: {device}")
+    os.makedirs(weights_dir, exist_ok=True)
     
     ssd_model = SSD300(backbone=ResNet(backbone=args.backbone, weights='IMAGENET1K_V1'))
     ssd_model.to(device)
@@ -210,7 +220,8 @@ def train(args, train_loader, val_loader, coco_gt, category_names=None, resume_c
         for _ in range(start_epoch):
             scheduler.step()
 
-    scaler = torch.amp.GradScaler('cuda')
+    amp_enabled = device.type == "cuda"
+    scaler = torch.amp.GradScaler('cuda', enabled=amp_enabled)
     
     # 5. 训练循环
     warmup_iters = 300
@@ -233,7 +244,7 @@ def train(args, train_loader, val_loader, coco_gt, category_names=None, resume_c
 
             optimizer.zero_grad()
 
-            with torch.amp.autocast('cuda'):
+            with torch.amp.autocast('cuda', enabled=amp_enabled):
                 loc_preds, conf_preds = ssd_model(images)
                 loc_preds = loc_preds.float()
                 conf_preds = conf_preds.float()
@@ -263,11 +274,11 @@ def train(args, train_loader, val_loader, coco_gt, category_names=None, resume_c
         previous_best = best_map
         if val_map is not None and val_map > previous_best:
             best_map = val_map
-            save_checkpoint(BEST_CHECKPOINT, current_epoch, ssd_model, optimizer, scheduler, best_map)
-            print(f"New best checkpoint saved to {BEST_CHECKPOINT} with mAP {best_map:.4f}")
+            save_checkpoint(best_checkpoint, current_epoch, ssd_model, optimizer, scheduler, best_map)
+            print(f"New best checkpoint saved to {best_checkpoint} with mAP {best_map:.4f}")
 
-        save_checkpoint(LAST_CHECKPOINT, current_epoch, ssd_model, optimizer, scheduler, best_map)
-        print(f"Last checkpoint saved to {LAST_CHECKPOINT} at epoch {current_epoch}")
+        save_checkpoint(last_checkpoint, current_epoch, ssd_model, optimizer, scheduler, best_map)
+        print(f"Last checkpoint saved to {last_checkpoint} at epoch {current_epoch}")
 
     writer.close()
     return ssd_model

@@ -14,47 +14,98 @@
 
 import torch
 import torch.nn as nn
-from torchvision.models.resnet import resnet18, resnet34, resnet50, resnet101, resnet152
+
+try:
+    import timm
+except ImportError:  # pragma: no cover - handled at runtime when the backbone is constructed
+    timm = None
+
+
+AVAILABLE_RESNET_BACKBONES = [
+    "resnet18",
+    "resnet34",
+    "resnet50",
+    "resnet101",
+    "resnet152",
+    "resnet18d",
+    "resnet34d",
+    "resnet50d",
+    "resnet101d",
+    "resnet152d",
+    "resnext50_32x4d",
+    "resnext101_32x8d",
+    "wide_resnet50_2",
+    "wide_resnet101_2",
+    "resnetrs50",
+    "resnetrs101",
+    "resnetrs152",
+]
+
+# These shapes were checked once against timm and then fixed here to keep the runtime simple.
+BACKBONE_SPECS = {
+    "resnet18": {"stage_channels": 256, "tail_channels": 128},
+    "resnet18d": {"stage_channels": 256, "tail_channels": 128},
+    "resnet34": {"stage_channels": 256, "tail_channels": 256},
+    "resnet34d": {"stage_channels": 256, "tail_channels": 256},
+    "resnet50": {"stage_channels": 1024, "tail_channels": 256},
+    "resnet50d": {"stage_channels": 1024, "tail_channels": 256},
+    "resnet101": {"stage_channels": 1024, "tail_channels": 256},
+    "resnet101d": {"stage_channels": 1024, "tail_channels": 256},
+    "resnet152": {"stage_channels": 1024, "tail_channels": 256},
+    "resnet152d": {"stage_channels": 1024, "tail_channels": 256},
+    "resnext50_32x4d": {"stage_channels": 1024, "tail_channels": 256},
+    "resnext101_32x8d": {"stage_channels": 1024, "tail_channels": 256},
+    "wide_resnet50_2": {"stage_channels": 1024, "tail_channels": 256},
+    "wide_resnet101_2": {"stage_channels": 1024, "tail_channels": 256},
+    "resnetrs50": {"stage_channels": 1024, "tail_channels": 256},
+    "resnetrs101": {"stage_channels": 1024, "tail_channels": 256},
+    "resnetrs152": {"stage_channels": 1024, "tail_channels": 256},
+}
 
 
 class ResNet(nn.Module):
-    def __init__(self, backbone='resnet50', backbone_path=None, weights="IMAGENET1K_V1"):
+    def __init__(self, backbone='resnet50', backbone_path=None, weights="IMAGENET1K_V1", output_stride=8):
         super().__init__()
-        if backbone == 'resnet18':
-            backbone = resnet18(weights=None if backbone_path else weights)
-            self.out_channels = [256, 512, 512, 256, 256, 128]
-        elif backbone == 'resnet34':
-            backbone = resnet34(weights=None if backbone_path else weights)
-            self.out_channels = [256, 512, 512, 256, 256, 256]
-        elif backbone == 'resnet50':
-            backbone = resnet50(weights=None if backbone_path else weights)
-            self.out_channels = [1024, 512, 512, 256, 256, 256]
-        elif backbone == 'resnet101':
-            backbone = resnet101(weights=None if backbone_path else weights)
-            self.out_channels = [1024, 512, 512, 256, 256, 256]
-        else:  # backbone == 'resnet152':
-            backbone = resnet152(weights=None if backbone_path else weights)
-            self.out_channels = [1024, 512, 512, 256, 256, 256]
+
+        spec = BACKBONE_SPECS.get(backbone)
+        if spec is None:
+            raise ValueError(f"Unsupported backbone: {backbone}")
+
+        if timm is None:
+            raise ImportError(
+                "timm is required for the backbone wrapper. Install it with `pip install timm`."
+            )
+
+        use_pretrained = backbone_path is None and bool(weights)
+        self.backbone_name = backbone
+        self.feature_extractor = timm.create_model(
+            backbone,
+            pretrained=use_pretrained,
+            features_only=True,
+            out_indices=(3,),
+            output_stride=output_stride,
+        )
+
         if backbone_path:
-            backbone.load_state_dict(torch.load(backbone_path))
+            state_dict = torch.load(backbone_path, map_location="cpu")
+            if isinstance(state_dict, dict) and "state_dict" in state_dict:
+                state_dict = state_dict["state_dict"]
+            self.feature_extractor.load_state_dict(state_dict, strict=False)
 
-
-        self.feature_extractor = nn.Sequential(*list(backbone.children())[:7])
-
-        conv4_block1 = self.feature_extractor[-1][0]
-
-        conv4_block1.conv1.stride = (1, 1)
-        conv4_block1.conv2.stride = (1, 1)
-        conv4_block1.downsample[0].stride = (1, 1)
+        stage_channels = spec["stage_channels"]
+        tail_channels = spec["tail_channels"]
+        self.out_channels = [stage_channels, 512, 512, 256, 256, tail_channels]
 
     def forward(self, x):
-        x = self.feature_extractor(x)
-        return x
+        return self.feature_extractor(x)[0]
 
 
 class SSD300(nn.Module):
-    def __init__(self, backbone=ResNet('resnet50')):
+    def __init__(self, backbone=None):
         super().__init__()
+
+        if backbone is None:
+            backbone = ResNet('resnet50')
 
         self.feature_extractor = backbone
 

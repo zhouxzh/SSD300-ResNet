@@ -41,9 +41,10 @@ class HFToSSDDataset(Dataset):
         
         # Define Normalize transform (used in both train and val)
         self.normalize_transform = v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        use_augment = bool(getattr(self.args, "augment", False))
         
         # Training Augmentation Logic merged here
-        if self.is_train and self.args.augment:
+        if self.is_train and use_augment:
             # Augmentation enabled
             print("Data Augmentation is enabled (args.augment=True), using photometric distortions, random cropping, and horizontal flipping.")
             self.train_transform = v2.Compose([

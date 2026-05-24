@@ -7,8 +7,9 @@ from _bootstrap import add_root_path
 add_root_path()
 
 from ssd300.data_hf import download_and_load_coco, get_train_loader, get_val_dataloader, get_coco_ground_truth
+from ssd300.model import AVAILABLE_RESNET_BACKBONES
 from ssd300.train import train
-from ssd300.train import export_onnx_model
+from ssd300.train import export_onnx_model, get_onnx_path
 from pycocotools.coco import COCO
     
 def get_args():
@@ -27,11 +28,17 @@ def get_args():
     device_default = "cuda" if torch.cuda.is_available() else "cpu"
     parser.add_argument("--device", type=str, default=device_default, help="Device (cuda/cpu)")
     
-    parser.add_argument("--backbone", type=str, default="resnet50", help="Model backbone")
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        default="resnet50",
+        choices=AVAILABLE_RESNET_BACKBONES + ["all"],
+        help="Model backbone, or 'all' for all supported resnet variants",
+    )
     parser.add_argument("--augment", action='store_true', default=True, help="Use data augmentation")
     
-    # Restart from weights/last.pth
-    parser.add_argument("--restart", action='store_true', help="Resume training from weights/last.pth")
+    # Restart from weights/<backbone>/last.pth
+    parser.add_argument("--restart", action='store_true', help="Resume training from weights/<backbone>/last.pth")
     
     return parser.parse_args()
 
@@ -70,12 +77,13 @@ def get_category_names(dataset):
         print(f"Error extracting category names: {e}")
         return None
 
-def find_latest_checkpoint():
+def find_latest_checkpoint(backbone):
     """
-    Resume from weights/last.pth if available.
+    Resume from weights/<backbone>/last.pth if available.
     The checkpoint stores the completed epoch count in its metadata.
     """
-    last_path = os.path.join("weights", "last.pth")
+    model_dir = os.path.join("weights", backbone)
+    last_path = os.path.join(model_dir, "last.pth")
     if os.path.exists(last_path):
         state = torch.load(last_path, map_location="cpu")
         if isinstance(state, dict) and "epoch" in state:
@@ -84,7 +92,7 @@ def find_latest_checkpoint():
         print(f"Found legacy last checkpoint: {last_path}")
         return last_path, 0
 
-    best_path = os.path.join("weights", "best.pth")
+    best_path = os.path.join(model_dir, "best.pth")
     if os.path.exists(best_path):
         state = torch.load(best_path, map_location="cpu")
         if isinstance(state, dict) and "epoch" in state:
@@ -93,7 +101,7 @@ def find_latest_checkpoint():
         print(f"Found legacy best checkpoint: {best_path}")
         return best_path, 0
 
-    print("No checkpoint found in weights/.")
+    print(f"No checkpoint found for backbone {backbone} in weights/.")
     return None, 0
 
 if __name__ == "__main__":
@@ -116,16 +124,16 @@ if __name__ == "__main__":
     if category_names:
         category_names = ['BACKGROUND'] + category_names
     
-    # 4. Handle Restart/Resume
-    resume_checkpoint = None
-    start_epoch = 0
-    if args.restart:
-        resume_checkpoint, start_epoch = find_latest_checkpoint()
-    
-    # 5. Start Training
-    ssd_model = train(args, train_loader, val_loader, coco_gt, category_names, resume_checkpoint, start_epoch)
-    
-    # Export ONNX model after training
-    # export_onnx_model is called here after training completes.
+    # 4. Handle Restart/Resume and training mode
+    backbones = AVAILABLE_RESNET_BACKBONES if args.backbone == "all" else [args.backbone]
 
-    export_onnx_model(ssd_model, args.device, onnx_path=f"models/ssd300_{args.backbone}.onnx")
+    for backbone_name in backbones:
+        args.backbone = backbone_name
+        resume_checkpoint = None
+        start_epoch = 0
+        if args.restart:
+            resume_checkpoint, start_epoch = find_latest_checkpoint(backbone_name)
+
+        print(f"\n===== Training backbone: {backbone_name} =====")
+        ssd_model = train(args, train_loader, val_loader, coco_gt, category_names, resume_checkpoint, start_epoch)
+        export_onnx_model(ssd_model, args.device, onnx_path=get_onnx_path(backbone_name))

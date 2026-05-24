@@ -236,12 +236,12 @@ def get_coco_ground_truth(val_ds_hf):
         objects = item.get("objects", {})
         if len(objects.get("bbox", [])) > 0:
             for bbox, cat in zip(objects["bbox"], objects["category"]):
-                xmin, ymin, bw_src, bh_src = bbox
+                xmin, ymin, xmax, ymax = bbox
 
                 bx = xmin * 300 / w
                 by = ymin * 300 / h
-                bw = bw_src * 300 / w
-                bh = bh_src * 300 / h
+                bw = (xmax - xmin) * 300 / w
+                bh = (ymax - ymin) * 300 / h
 
                 coco_gt_dict["annotations"].append(
                     {
@@ -434,7 +434,7 @@ if __name__ == "__main__":
 
     val_dataset = load_coco_val()
 
-    om_model_path = args.model if args.model else f"models/ssd_{args.backbone}.om"
+    om_model_path = args.model if args.model else f"weights/{args.backbone}/ssd_{args.backbone}.om"
 
     dboxes = dboxes300_coco()
     encoder = Encoder(dboxes)

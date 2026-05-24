@@ -13,6 +13,7 @@ add_root_path()
 
 # 引入项目中的工具用于解码
 from ssd300.utils_cpu import dboxes300_coco, Encoder, visualize_sample
+from ssd300.train import get_onnx_path
 # 引入 pycocotools 用于评估 mAP
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
@@ -95,7 +96,7 @@ def get_gt_data(item, orig_w, orig_h):
     if len(objects['bbox']) == 0:
         return np.array([]), np.array([])
 
-    boxes = np.array(objects['bbox']) # [x, y, w, h] from HF dataset
+    boxes = np.array(objects['bbox']) # [xmin, ymin, xmax, ymax] from HF dataset
     labels = np.array(objects['category']) + 1 # SSD category=0 is background
     
     # 计算缩放比例
@@ -105,8 +106,8 @@ def get_gt_data(item, orig_w, orig_h):
     # 缩放 boxes
     boxes[:, 0] *= scale_x # x
     boxes[:, 1] *= scale_y # y
-    boxes[:, 2] *= scale_x # w
-    boxes[:, 3] *= scale_y # h
+    boxes[:, 2] *= scale_x # xmax
+    boxes[:, 3] *= scale_y # ymax
     
     return boxes.astype(np.float32), labels.astype(np.int64)
 
@@ -264,7 +265,10 @@ if __name__ == "__main__":
     val_dataset = load_coco_val()
 
     # 2. 准备 ONNX 模型路径
-    onnx_model_path = f"models/ssd300_{args.backbone}.onnx"
+    onnx_model_path = get_onnx_path(args.backbone)
+    if not os.path.exists(onnx_model_path):
+        legacy_path = f"models/ssd300_{args.backbone}.onnx"
+        onnx_model_path = legacy_path
 
     # 3. 准备解码工具
     dboxes = dboxes300_coco()
