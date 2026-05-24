@@ -1,0 +1,5 @@
+Cython>=0.29.32
+torch>=2.7.0
+pycocotools>=2.0.2
+numpy>=1.21.0
+tensorboard>=2.8.0
