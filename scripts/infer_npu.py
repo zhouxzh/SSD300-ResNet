@@ -6,7 +6,12 @@ import argparse
 import time
 import json
 import acl
-from utils_cpu import dboxes300_coco, Encoder, visualize_sample
+
+from _bootstrap import add_root_path
+
+add_root_path()
+
+from ssd300.utils_cpu import dboxes300_coco, Encoder, visualize_sample
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 

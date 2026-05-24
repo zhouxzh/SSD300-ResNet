@@ -1,15 +1,14 @@
 import os
 import argparse
-import re
 import torch
-import sys
 
-# Add the current directory to sys.path to ensure we can import ssd modules
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from _bootstrap import add_root_path
 
-from ssd.data_hf import download_and_load_coco, get_train_loader, get_val_dataloader, get_coco_ground_truth
-from ssd.train import train
-from ssd.train import export_onnx_model
+add_root_path()
+
+from ssd300.data_hf import download_and_load_coco, get_train_loader, get_val_dataloader, get_coco_ground_truth
+from ssd300.train import train
+from ssd300.train import export_onnx_model
 from pycocotools.coco import COCO
     
 def get_args():
@@ -31,8 +30,8 @@ def get_args():
     parser.add_argument("--backbone", type=str, default="resnet50", help="Model backbone")
     parser.add_argument("--augment", action='store_true', default=True, help="Use data augmentation")
     
-    # New argument for restarting training
-    parser.add_argument("--restart", action='store_true', help="Resume training from the latest checkpoint in models/")
+    # Restart from weights/last.pth
+    parser.add_argument("--restart", action='store_true', help="Resume training from weights/last.pth")
     
     return parser.parse_args()
 
@@ -71,36 +70,31 @@ def get_category_names(dataset):
         print(f"Error extracting category names: {e}")
         return None
 
-def find_latest_checkpoint(backbone):
+def find_latest_checkpoint():
     """
-    Find the latest checkpoint for the given backbone in the checkpoints/ directory.
-    Assumes filename format: ssd_{backbone}_{epoch}.pth
+    Resume from weights/last.pth if available.
+    The checkpoint stores the completed epoch count in its metadata.
     """
-    model_dir = "checkpoints"
-    if not os.path.exists(model_dir):
-        return None, 0
-    
-    # Pattern to match: ssd_{backbone}_{epoch}.pth
-    pattern = re.compile(rf"ssd_{backbone}_(\d+)\.pth")
-    
-    max_epoch = -1
-    latest_checkpoint = None
-    
-    for filename in os.listdir(model_dir):
-        match = pattern.match(filename)
-        if match:
-            epoch = int(match.group(1))
-            if epoch > max_epoch:
-                max_epoch = epoch
-                latest_checkpoint = os.path.join(model_dir, filename)
-    
-    if latest_checkpoint:
-        print(f"Found latest checkpoint: {latest_checkpoint} (Epoch {max_epoch})")
-        # We start from the next epoch
-        return latest_checkpoint, max_epoch + 1
-    else:
-        print(f"No checkpoint found for backbone {backbone}.")
-        return None, 0
+    last_path = os.path.join("weights", "last.pth")
+    if os.path.exists(last_path):
+        state = torch.load(last_path, map_location="cpu")
+        if isinstance(state, dict) and "epoch" in state:
+            print(f"Found last checkpoint: {last_path} (Epoch {state['epoch']})")
+            return last_path, int(state["epoch"])
+        print(f"Found legacy last checkpoint: {last_path}")
+        return last_path, 0
+
+    best_path = os.path.join("weights", "best.pth")
+    if os.path.exists(best_path):
+        state = torch.load(best_path, map_location="cpu")
+        if isinstance(state, dict) and "epoch" in state:
+            print(f"Found best checkpoint: {best_path} (Epoch {state['epoch']})")
+            return best_path, int(state["epoch"])
+        print(f"Found legacy best checkpoint: {best_path}")
+        return best_path, 0
+
+    print("No checkpoint found in weights/.")
+    return None, 0
 
 if __name__ == "__main__":
     # 1. Get arguments
@@ -126,16 +120,12 @@ if __name__ == "__main__":
     resume_checkpoint = None
     start_epoch = 0
     if args.restart:
-        resume_checkpoint, start_epoch = find_latest_checkpoint(args.backbone)
+        resume_checkpoint, start_epoch = find_latest_checkpoint()
     
     # 5. Start Training
     ssd_model = train(args, train_loader, val_loader, coco_gt, category_names, resume_checkpoint, start_epoch)
     
     # Export ONNX model after training
-    # Note: export_onnx_model is a helper in ssd.train, but we might want to call it here or it is already called in train?
-    # Original code called it after train returns.
-    # We can import it from ssd.train if needed, or rely on train returning the model.
-    
-    # Let's import export_onnx_model from ssd.train as well to keep the flow
+    # export_onnx_model is called here after training completes.
 
-    export_onnx_model(ssd_model, args.device, onnx_path=f"models/ssd_{args.backbone}.onnx")
+    export_onnx_model(ssd_model, args.device, onnx_path=f"models/ssd300_{args.backbone}.onnx")

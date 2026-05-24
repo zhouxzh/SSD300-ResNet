@@ -5,8 +5,8 @@ import shutil
 
 def download_onnx_model(backbone, target_dir="models"):
     repo_id = "zhouxzh/ssd"
-    filename = f"ssd_{backbone}.onnx"
-    local_target = os.path.join(target_dir, filename)
+    local_target = os.path.join(target_dir, f"ssd300_{backbone}.onnx")
+    remote_filenames = [f"ssd300_{backbone}.onnx", f"ssd_{backbone}.onnx"]
 
     # 如果目标文件已存在，直接返回路径（避免重复下载）
     if os.path.exists(local_target):
@@ -16,15 +16,20 @@ def download_onnx_model(backbone, target_dir="models"):
     # 确保目标目录存在
     os.makedirs(target_dir, exist_ok=True)
 
-    # 下载到缓存（返回缓存中的路径）
-    cached_path = hf_hub_download(repo_id=repo_id, filename=filename)
-    print(f"缓存路径：{cached_path}")
+    last_error = None
+    for filename in remote_filenames:
+        try:
+            cached_path = hf_hub_download(repo_id=repo_id, filename=filename)
+            print(f"缓存路径：{cached_path}")
 
-    # 复制到目标目录
-    shutil.copy2(cached_path, local_target)  # copy2 保留元数据
-    print(f"模型已复制到：{local_target}")
+            # 统一保存为 ssd300_ 前缀
+            shutil.copy2(cached_path, local_target)
+            print(f"模型已复制到：{local_target}")
+            return local_target
+        except Exception as e:
+            last_error = e
 
-    return local_target
+    raise last_error
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

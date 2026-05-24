@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
 # 仅引入数据加载函数
-from ssd.data_hf import download_and_load_coco
+from ssd300.data_hf import download_and_load_coco
 
 def get_args():
     parser = argparse.ArgumentParser(description="Visualize COCO Ground Truth directly from HF Dataset")

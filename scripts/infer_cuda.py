@@ -1,61 +1,28 @@
 import os
+import torch
 import onnxruntime as ort
 import numpy as np
 from datasets import load_dataset
+import torchvision.transforms.functional as F
 from tqdm import tqdm
 import argparse
 import time
 import json
+
+from _bootstrap import add_root_path
+
+add_root_path()
+
 # 引入项目中的工具用于解码
-from utils_cpu import dboxes300_coco, Encoder, visualize_sample
+from ssd300.utils import dboxes300_coco, Encoder, visualize_sample
 # 引入 pycocotools 用于评估 mAP
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
-def get_coco_ground_truth(val_ds_hf):
-    print("Preparing COCO Ground Truth from HF dataset...")
-    coco_gt_dict = {"images": [], "annotations": [], "categories": []}
-    cat_ids = set()
-    
-    for i in range(len(val_ds_hf)):
-        item = val_ds_hf[i]
-        img_id = item.get('image_id', i)
-        w, h = item['image'].size
-        coco_gt_dict["images"].append({"id": img_id, "width": 300, "height": 300})
-        
-        objects = item.get('objects', {})
-        if len(objects.get('bbox', [])) > 0:
-            for bbox, cat in zip(objects['bbox'], objects['category']):
-                # Source is [xmin, ymin, xmax, ymax], Target COCO JSON is [x, y, w, h]
-                # Scale to 300x300
-                xmin, ymin, xmax, ymax = bbox
-                
-                bx = xmin * 300 / w
-                by = ymin * 300 / h
-                bw = (xmax - xmin) * 300 / w
-                bh = (ymax - ymin) * 300 / h
-                
-                coco_gt_dict["annotations"].append({
-                    "id": len(coco_gt_dict["annotations"]), 
-                    "image_id": img_id,
-                    "category_id": cat + 1, 
-                    "bbox": [bx, by, bw, bh], 
-                    "area": bw*bh, 
-                    "iscrowd": 0
-                })
-                cat_ids.add(cat + 1)
-                
-    for cid in cat_ids: 
-        coco_gt_dict["categories"].append({"id": cid, "name": str(cid)})
-    
-    gt_path = "coco_gt_temp.json"
-    with open(gt_path, "w") as f: 
-        json.dump(coco_gt_dict, f)
-    
-    return COCO(gt_path)
+from ssd300.data_hf import get_coco_ground_truth
 
 def load_coco_val():
-    dataset_name = "zhouxzh/coco-val"
+    dataset_name = "detection-datasets/coco"
     cache_directory = "./data"
     print(f"正在加载验证数据集: {dataset_name} ...")
     dataset = load_dataset(dataset_name, split='val', cache_dir=cache_directory)
@@ -69,16 +36,11 @@ def preprocess(image, img_size=300):
     image_resized = image.resize((img_size, img_size))
     
     # 标准化
-    img_array = np.array(image_resized, dtype=np.float32) / 255.0
-    img_array = img_array.transpose(2, 0, 1) # HWC to CHW
-    
-    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
-    std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
-    
-    img_tensor = (img_array - mean) / std
+    img_tensor = F.to_tensor(image_resized)
+    img_tensor = F.normalize(img_tensor, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     
     # 添加 batch 维度
-    img_numpy = np.expand_dims(img_tensor, axis=0)
+    img_numpy = img_tensor.unsqueeze(0).numpy()
     return img_numpy, orig_w, orig_h
 
 def get_gt_data(item, orig_w, orig_h):
@@ -88,7 +50,7 @@ def get_gt_data(item, orig_w, orig_h):
     """
     objects = item['objects']
     if len(objects['bbox']) == 0:
-        return np.array([]), np.array([])
+        return torch.tensor([]), torch.tensor([])
 
     boxes = np.array(objects['bbox']) # [x, y, w, h] from HF dataset
     labels = np.array(objects['category']) + 1 # SSD category=0 is background
@@ -103,7 +65,7 @@ def get_gt_data(item, orig_w, orig_h):
     boxes[:, 2] *= scale_x # w
     boxes[:, 3] *= scale_y # h
     
-    return boxes.astype(np.float32), labels.astype(np.int64)
+    return torch.from_numpy(boxes).float(), torch.from_numpy(labels).long()
 
 def visualize_validation_predictions(args, session, encoder, val_dataset):
     input_name = session.get_inputs()[0].name
@@ -128,13 +90,13 @@ def visualize_validation_predictions(args, session, encoder, val_dataset):
         img_input, orig_w, orig_h = preprocess(image)
         
         # 用于可视化的 Tensor (需要去 batch 维度, 3x300x300)
-        img_tensor = img_input[0]
+        img_tensor = torch.from_numpy(img_input[0])
         
         # 4. 推理
         # 模型输出通常为: boxes (locs), scores (confs)
         # 这里的输出名称取决于导出时的设置，通常是 'boxes', 'scores'
         outs = session.run(['boxes', 'scores'], {input_name: img_input})
-        locs, confs = outs[0], outs[1]
+        locs, confs = torch.from_numpy(outs[0]), torch.from_numpy(outs[1])
         
         # 5. 解码预测结果
         # decoder.decode_batch 返回的是 list of tuples: (boxes, labels, scores)
@@ -183,8 +145,8 @@ def evaluate_dataset(val_dataset, session, encoder, gt_file):
         
         # 推理
         outs = session.run(['boxes', 'scores'], {input_name: img_input})
-        locs = outs[0]
-        confs = outs[1]
+        locs = torch.from_numpy(outs[0])
+        confs = torch.from_numpy(outs[1])
         
         # 解码
         decoded_results = encoder.decode_batch(locs, confs, criteria=0.5, max_output=200)
@@ -193,7 +155,7 @@ def evaluate_dataset(val_dataset, session, encoder, gt_file):
         # 格式化结果
         p_boxes, p_labels, p_scores = decoded_results[0]
         
-        if p_boxes.size > 0:
+        if p_boxes.numel() > 0:
             # 还原到原图尺寸
             p_boxes *= 300.0
             
@@ -259,7 +221,7 @@ if __name__ == "__main__":
     val_dataset = load_coco_val()
 
     # 2. 准备 ONNX 模型路径
-    onnx_model_path = f"models/ssd_{args.backbone}.onnx"
+    onnx_model_path = f"models/ssd300_{args.backbone}.onnx"
 
     # 3. 准备解码工具
     dboxes = dboxes300_coco()
@@ -271,7 +233,7 @@ if __name__ == "__main__":
         exit(1)
 
     sess_options = ort.SessionOptions()
-    providers = ['CPUExecutionProvider']
+    providers = ['CUDAExecutionProvider']
     try:
         session = ort.InferenceSession(onnx_model_path, sess_options, providers=providers)
     except Exception as e:
@@ -280,7 +242,6 @@ if __name__ == "__main__":
     
     visualize_validation_predictions(args, session, encoder, val_dataset)
     # 生成 GT 文件以确保准确性
-    gt_file = "coco_gt_temp.json"
-    get_coco_ground_truth(val_dataset)
+    gt_file = get_coco_ground_truth(val_dataset)
     
     evaluate_dataset(val_dataset, session, encoder, gt_file)

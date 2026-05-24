@@ -283,8 +283,8 @@ The example scripts need two arguments:
 
 Remaining arguments are passed to the `main.py` script.
 
-The `--save save_dir` flag, saves the model after each epoch in `save_dir` directory.
-The checkpoints are stored as `<save_dir>/epoch_*.pt`.
+The training script writes `weights/best.pth` and `weights/last.pth`.
+`last.pth` stores the completed epoch, optimizer state, and scheduler state, so it can be used to resume training directly.
 
 Use `python main.py -h` to obtain the list of available options in the `main.py` script.
 For example, if you want to run 8 GPU training with Tensor Core acceleration and
@@ -302,13 +302,13 @@ The results from the validation are printed to `stdout`.
 To evaluate a checkpointed model saved in the previous point, run:
 
 ```
-python ./main.py --backbone resnet50 --mode evaluation --checkpoint ./models/epoch_*.pt --data /coco
+python ./main.py --backbone resnet50 --mode evaluation --checkpoint ./weights/best.pth --data /coco
 ```
 
 7. Optionally, resume training from a checkpointed model.
 
 ```
-python ./main.py --backbone resnet50 --checkpoint ./models/epoch_*.pt --data /coco
+python ./main.py --backbone resnet50 --checkpoint ./weights/last.pth --data /coco
 ```
 
 8. Start inference/predictions.
@@ -316,7 +316,7 @@ python ./main.py --backbone resnet50 --checkpoint ./models/epoch_*.pt --data /co
 You can check your trained model with a Jupyter notebook provided in the examples directory.
 Start with running a Docker container with a Jupyter notebook server:
 ```
-docker run --rm -it --gpus=all --ipc=host -v $SSD_CHECKPOINT_PATH:/checkpoints/SSD300v1.1.pt -v $COCO_PATH:/datasets/coco2017 -p 8888:8888 nvidia_ssd jupyter-notebook --ip 0.0.0.0 --allow-root
+docker run --rm -it --gpus=all --ipc=host -v $SSD_CHECKPOINT_PATH:/weights/best.pth -v $COCO_PATH:/datasets/coco2017 -p 8888:8888 nvidia_ssd jupyter-notebook --ip 0.0.0.0 --allow-root
 ```
 
 ## Advanced

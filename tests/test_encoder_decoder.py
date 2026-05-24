@@ -6,7 +6,7 @@ import numpy as np
 import torch
 
 # 仅引入数据加载函数
-from ssd.data_hf import download_and_load_coco, get_train_loader, get_val_dataloader
+from ssd300.data_hf import download_and_load_coco, get_train_loader, get_val_dataloader
 
 def get_args():
     parser = argparse.ArgumentParser(description="Visualize COCO Ground Truth directly from HF Dataset")
@@ -87,27 +87,56 @@ def visualize_tensor_boxes(img_tensor, boxes, labels, category_names, save_path,
             pos_locs = boxes[mask]
             pos_labels = labels[mask]
             
-            # Box decoding logic
-            if box_coder.dboxes_xywh.device != img_tensor.device:
-                box_coder.dboxes_xywh = box_coder.dboxes_xywh.to(img_tensor.device)
-            dboxes = box_coder.dboxes_xywh[mask]
-            
-            v0, v1 = box_coder.variances
-            # cx = loc_cx * v0 * d_w + d_cx
-            gx = pos_locs[:, 0] * v0 * dboxes[:, 2] + dboxes[:, 0]
-            gy = pos_locs[:, 1] * v0 * dboxes[:, 3] + dboxes[:, 1]
-            gw = torch.exp(pos_locs[:, 2] * v1) * dboxes[:, 2]
-            gh = torch.exp(pos_locs[:, 3] * v1) * dboxes[:, 3]
-            
-            x1 = gx - gw/2
-            y1 = gy - gh/2
-            x2 = gx + gw/2
-            y2 = gy + gh/2
-            
-            decoded_boxes = torch.stack([x1, y1, x2, y2], dim=1)
-            # Scale back to 300
-            boxes_to_draw = decoded_boxes * box_coder.img_size
-            labels_to_draw = pos_labels
+            # Check if this is utils.Encoder (NVIDIA style) or legacy SSDBoxCoder
+            if hasattr(box_coder, 'scale_xy'):
+                # utils.Encoder.encode 返回的是 matched xywh (normalized)
+                # 不需要像 offsets 那样解码，只需要转回 xyxy
+                gx = pos_locs[:, 0]
+                gy = pos_locs[:, 1]
+                gw = pos_locs[:, 2]
+                gh = pos_locs[:, 3]
+                
+                x1 = gx - gw/2
+                y1 = gy - gh/2
+                x2 = gx + gw/2
+                y2 = gy + gh/2
+                
+                decoded_boxes = torch.stack([x1, y1, x2, y2], dim=1)
+                # Scale back to 300 (default SSD size)
+                boxes_to_draw = decoded_boxes * 300 
+                labels_to_draw = pos_labels
+                
+            else:
+                # Legacy SSDBoxCoder logic (Expects Offsets)
+                if box_coder.dboxes_xywh.device != img_tensor.device:
+                    box_coder.dboxes_xywh = box_coder.dboxes_xywh.to(img_tensor.device)
+                
+                # Fix shape mismatch: box_coder.dboxes_xywh might be [1, N, 4]
+                dboxes_ref = box_coder.dboxes_xywh
+                if dboxes_ref.dim() == 3 and dboxes_ref.size(0) == 1:
+                    dboxes_ref = dboxes_ref.squeeze(0)
+                    
+                dboxes = dboxes_ref[mask]
+                
+                v0 = getattr(box_coder, 'variances', [0.1, 0.2])[0]
+                v1 = getattr(box_coder, 'variances', [0.1, 0.2])[1]
+
+                # cx = loc_cx * v0 * d_w + d_cx
+                gx = pos_locs[:, 0] * v0 * dboxes[:, 2] + dboxes[:, 0]
+                gy = pos_locs[:, 1] * v0 * dboxes[:, 3] + dboxes[:, 1]
+                gw = torch.exp(pos_locs[:, 2] * v1) * dboxes[:, 2]
+                gh = torch.exp(pos_locs[:, 3] * v1) * dboxes[:, 3]
+                
+                x1 = gx - gw/2
+                y1 = gy - gh/2
+                x2 = gx + gw/2
+                y2 = gy + gh/2
+                
+                decoded_boxes = torch.stack([x1, y1, x2, y2], dim=1)
+                # Scale back to 300
+                img_size = getattr(box_coder, 'img_size', 300)
+                boxes_to_draw = decoded_boxes * img_size
+                labels_to_draw = pos_labels
         else:
             boxes_to_draw = []
             labels_to_draw = []
@@ -160,6 +189,7 @@ if __name__ == "__main__":
     # 获取类别名称列表
     category_names = get_category_names(full_dataset)
     if category_names:
+        category_names = ["BACKGROUND"] + category_names
         print(f"Found {len(category_names)} category names.")
     else:        
         print("No category names found. Will display category IDs only.")
@@ -174,6 +204,7 @@ if __name__ == "__main__":
     # 2. 可视化训练集前10张图片的 GT 框 (Decoder Needed)
     print("Visualizing GT boxes for training set...")
     box_coder = train_loader.dataset.box_coder
+    print(box_coder)  # Debug: Print box coder info
     
     for i, batch in enumerate(train_loader):
         if i >= 1: break # Visualize just the first batch
@@ -211,4 +242,3 @@ if __name__ == "__main__":
             print(f"Saved {save_path}")
 
     print("Visualization val completed. Check the 'debug_gt_viz' directory for results.")
-
